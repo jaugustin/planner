@@ -161,8 +161,35 @@ button {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 0.45rem;
+}
+
+.file-block {
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.7rem;
+}
+
+.file-block:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.file-title {
+  margin: 0 0 0.45rem;
+  font-size: 0.98rem;
+  color: #2f453f;
+}
+
+.sheet-block {
+  margin-top: 0.55rem;
+}
+
+.sheet-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
+  color: #514b3f;
 }
 
 .kpi {
@@ -259,6 +286,10 @@ button {
 
   .hero h1 {
     font-size: 1.75rem;
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(4, 1fr);
   }
 
   .controls {

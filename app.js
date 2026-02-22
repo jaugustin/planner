@@ -56,11 +56,15 @@
 
     setStatus("Lecture de " + files.length + " fichier(s)...", false);
 
-    Promise.all(files.map(readWorkbookFromFile))
+    Promise.all(
+      files.map(function (file, index) {
+        return readWorkbookFromFile(file, index);
+      })
+    )
       .then(function (workbooks) {
         var merged = [];
         workbooks.forEach(function (item) {
-          merged = merged.concat(parseWorkbook(item.workbook, item.fileName));
+          merged = merged.concat(parseWorkbook(item.workbook, item.fileName, item.fileOrder));
         });
 
         state.baseRecords = merged;
@@ -111,7 +115,9 @@
           weekOrder: rec.weekOrder,
           sortYear: rec.sortYear,
           sortMonth: rec.sortMonth,
+          fileOrder: rec.fileOrder,
           sheetName: rec.sheetName,
+          sheetOrder: rec.sheetOrder,
           fileName: rec.fileName,
           section: rec.section,
           role: rec.role,
@@ -134,13 +140,13 @@
     renderPerson();
   }
 
-  function readWorkbookFromFile(file) {
+  function readWorkbookFromFile(file, fileOrder) {
     return new Promise(function (resolve, reject) {
       var reader = new FileReader();
       reader.onload = function (evt) {
         try {
           var workbook = XLSX.read(evt.target.result, { type: "array", cellDates: false });
-          resolve({ fileName: file.name, workbook: workbook });
+          resolve({ fileName: file.name, fileOrder: fileOrder, workbook: workbook });
         } catch (err) {
           reject(err);
         }
@@ -150,11 +156,11 @@
     });
   }
 
-  function parseWorkbook(workbook, fileName) {
+  function parseWorkbook(workbook, fileName, fileOrder) {
     var records = [];
     var weekIndex = 0;
 
-    workbook.SheetNames.forEach(function (sheetName) {
+    workbook.SheetNames.forEach(function (sheetName, sheetOrder) {
       var sheet = workbook.Sheets[sheetName];
       var rows = XLSX.utils.sheet_to_json(sheet, {
         header: 1,
@@ -169,7 +175,18 @@
         var weekLabel = findWeekLabel(rows, header.row, sheetName);
         var weekMeta = deriveWeekMeta(weekLabel);
         records = records.concat(
-          extractAssignments(rows, header, nextHeaderRow, fileName, sheetName, weekLabel, weekIndex, weekMeta)
+          extractAssignments(
+            rows,
+            header,
+            nextHeaderRow,
+            fileName,
+            fileOrder,
+            sheetName,
+            sheetOrder,
+            weekLabel,
+            weekIndex,
+            weekMeta
+          )
         );
       });
     });
@@ -227,7 +244,18 @@
     return fallback;
   }
 
-  function extractAssignments(rows, header, nextHeaderRow, fileName, sheetName, weekLabel, weekIndex, weekMeta) {
+  function extractAssignments(
+    rows,
+    header,
+    nextHeaderRow,
+    fileName,
+    fileOrder,
+    sheetName,
+    sheetOrder,
+    weekLabel,
+    weekIndex,
+    weekMeta
+  ) {
     var out = [];
     var currentSection = "";
     var currentRole = "";
@@ -262,7 +290,9 @@
             weekOrder: weekIndex,
             sortYear: weekMeta.year,
             sortMonth: weekMeta.month,
+            fileOrder: fileOrder,
             sheetName: sheetName,
+            sheetOrder: sheetOrder,
             fileName: fileName,
             section: currentSection || "",
             role: currentRole || "",
@@ -355,15 +385,23 @@
     var enabled = state.records.filter(isTaskEnabled);
     var daysCountByPerson = {};
     enabled.forEach(function (rec) {
-      var key = rec.person + "|" + rec.weekLabel + "|" + rec.dayName + "|" + rec.dayLabel;
+      var key = rec.person + "|" + rec.fileName + "|" + rec.sheetName + "|" + rec.weekLabel + "|" + rec.dayLabel;
       daysCountByPerson[key] = true;
     });
+
+    var globalDaysSelectedPerson = countGlobalDaysForPerson(enabled, state.selectedPerson);
+    var selectedLabel = state.selectedPerson ? "(" + state.selectedPerson + ")" : "";
 
     summaryEl.innerHTML =
       '<div class="summary-grid">' +
       '<div class="kpi"><strong>' + state.people.length + "</strong><span>personnes</span></div>" +
       '<div class="kpi"><strong>' + Object.keys(daysCountByPerson).length + "</strong><span>jours planifies</span></div>" +
       '<div class="kpi"><strong>' + enabled.length + "</strong><span>affectations</span></div>" +
+      '<div class="kpi"><strong>' +
+      globalDaysSelectedPerson +
+      "</strong><span>jours globaux " +
+      escapeHtml(selectedLabel) +
+      "</span></div>" +
       "</div>";
   }
 
@@ -389,27 +427,41 @@
     var html = '<article class="panel">';
     html += "<h2>" + escapeHtml(name) + "</h2>";
 
-    timeline.forEach(function (week) {
-      html += '<section class="week-block">';
-      html += '<h3 class="week-title">' + escapeHtml(week.weekLabel) + "</h3>";
-      html += '<ul class="day-list">';
+    timeline.forEach(function (fileGroup) {
+      html += '<section class="file-block">';
+      html += '<h3 class="file-title">' + escapeHtml(fileGroup.fileName) + "</h3>";
 
-      week.days.forEach(function (day) {
-        html += '<li class="day-item">';
-        html += '<div class="day-main"><span class="day-chip">' + escapeHtml(day.dayLabel) + "</span></div>";
+      fileGroup.sheets.forEach(function (sheetGroup) {
+        html += '<section class="sheet-block">';
+        html += '<h4 class="sheet-title">' + escapeHtml(sheetGroup.sheetName) + "</h4>";
 
-        if (state.showTasks && day.tasks.length) {
-          html += '<ul class="task-list">';
-          day.tasks.forEach(function (task) {
-            html += "<li>" + escapeHtml(task) + "</li>";
+        sheetGroup.weeks.forEach(function (week) {
+          html += '<section class="week-block">';
+          html += '<h5 class="week-title">' + escapeHtml(week.weekLabel) + "</h5>";
+          html += '<ul class="day-list">';
+
+          week.days.forEach(function (day) {
+            html += '<li class="day-item">';
+            html += '<div class="day-main"><span class="day-chip">' + escapeHtml(day.dayLabel) + "</span></div>";
+
+            if (state.showTasks && day.tasks.length) {
+              html += '<ul class="task-list">';
+              day.tasks.forEach(function (task) {
+                html += "<li>" + escapeHtml(task) + "</li>";
+              });
+              html += "</ul>";
+            }
+
+            html += "</li>";
           });
-          html += "</ul>";
-        }
 
-        html += "</li>";
+          html += "</ul>";
+          html += "</section>";
+        });
+
+        html += "</section>";
       });
 
-      html += "</ul>";
       html += "</section>";
     });
 
@@ -418,66 +470,109 @@
   }
 
   function buildTimeline(records) {
-    var weeks = [];
-    var weekMap = {};
+    var files = [];
+    var fileMap = {};
 
     records.forEach(function (rec) {
-      var wkKey = rec.weekLabel;
-      if (!weekMap[wkKey]) {
-        weekMap[wkKey] = {
+      var fileKey = rec.fileOrder + "|" + rec.fileName;
+      if (!fileMap[fileKey]) {
+        fileMap[fileKey] = {
+          fileOrder: rec.fileOrder,
+          fileName: rec.fileName,
+          sheets: [],
+          sheetMap: {},
+        };
+        files.push(fileMap[fileKey]);
+      }
+
+      var sheetKey = rec.sheetOrder + "|" + rec.sheetName;
+      if (!fileMap[fileKey].sheetMap[sheetKey]) {
+        fileMap[fileKey].sheetMap[sheetKey] = {
+          sheetOrder: rec.sheetOrder,
+          sheetName: rec.sheetName,
+          weeks: [],
+          weekMap: {},
+        };
+        fileMap[fileKey].sheets.push(fileMap[fileKey].sheetMap[sheetKey]);
+      }
+
+      var weekKey = rec.weekOrder + "|" + rec.weekLabel;
+      if (!fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey]) {
+        fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey] = {
           weekOrder: rec.weekOrder,
           weekLabel: rec.weekLabel,
-          sortYear: rec.sortYear,
-          sortMonth: rec.sortMonth,
-          fileName: rec.fileName,
           days: [],
           dayMap: {},
         };
-        weeks.push(weekMap[wkKey]);
+        fileMap[fileKey].sheetMap[sheetKey].weeks.push(fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey]);
       }
 
       var dayKey = rec.dayOrder + "|" + rec.dayLabel;
-      if (!weekMap[wkKey].dayMap[dayKey]) {
-        weekMap[wkKey].dayMap[dayKey] = {
+      if (!fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey].dayMap[dayKey]) {
+        fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey].dayMap[dayKey] = {
           dayOrder: rec.dayOrder,
           dayLabel: rec.dayLabel,
           tasks: [],
           taskSet: {},
         };
-        weekMap[wkKey].days.push(weekMap[wkKey].dayMap[dayKey]);
+        fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey].days.push(
+          fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey].dayMap[dayKey]
+        );
       }
 
-      if (rec.task && !weekMap[wkKey].dayMap[dayKey].taskSet[rec.task]) {
-        weekMap[wkKey].dayMap[dayKey].taskSet[rec.task] = true;
-        weekMap[wkKey].dayMap[dayKey].tasks.push(rec.task);
+      if (rec.task && !fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey].dayMap[dayKey].taskSet[rec.task]) {
+        fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey].dayMap[dayKey].taskSet[rec.task] = true;
+        fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey].dayMap[dayKey].tasks.push(rec.task);
       }
     });
 
-    weeks.sort(function (a, b) {
-      if (a.sortYear !== b.sortYear) return a.sortYear - b.sortYear;
-      if (a.sortMonth !== b.sortMonth) return a.sortMonth - b.sortMonth;
-      var aStart = a.days.length ? extractDayNumber(a.days[0].dayLabel) : 0;
-      var bStart = b.days.length ? extractDayNumber(b.days[0].dayLabel) : 0;
-      if (aStart !== bStart) return aStart - bStart;
-      return a.weekLabel.localeCompare(b.weekLabel, "fr", { sensitivity: "base" });
+    files.sort(function (a, b) {
+      if (a.fileOrder !== b.fileOrder) return a.fileOrder - b.fileOrder;
+      return a.fileName.localeCompare(b.fileName, "fr", { sensitivity: "base" });
     });
 
-    weeks.forEach(function (w) {
-      w.days.sort(function (a, b) {
-        if (a.dayOrder !== b.dayOrder) return a.dayOrder - b.dayOrder;
-        return extractDayNumber(a.dayLabel) - extractDayNumber(b.dayLabel);
+    files.forEach(function (fileGroup) {
+      fileGroup.sheets.sort(function (a, b) {
+        if (a.sheetOrder !== b.sheetOrder) return a.sheetOrder - b.sheetOrder;
+        return a.sheetName.localeCompare(b.sheetName, "fr", { sensitivity: "base" });
+      });
+
+      fileGroup.sheets.forEach(function (sheetGroup) {
+        sheetGroup.weeks.sort(function (a, b) {
+          if (a.weekOrder !== b.weekOrder) return a.weekOrder - b.weekOrder;
+          return a.weekLabel.localeCompare(b.weekLabel, "fr", { sensitivity: "base" });
+        });
+
+        sheetGroup.weeks.forEach(function (week) {
+          week.days.sort(function (a, b) {
+            if (a.dayOrder !== b.dayOrder) return a.dayOrder - b.dayOrder;
+            return extractDayNumber(a.dayLabel) - extractDayNumber(b.dayLabel);
+          });
+        });
       });
     });
 
-    return weeks;
+    return files;
   }
 
   function sortRecords(a, b) {
-    if (a.sortYear !== b.sortYear) return a.sortYear - b.sortYear;
-    if (a.sortMonth !== b.sortMonth) return a.sortMonth - b.sortMonth;
-    if (a.dayNumber !== b.dayNumber) return a.dayNumber - b.dayNumber;
+    if (a.fileOrder !== b.fileOrder) return a.fileOrder - b.fileOrder;
+    if (a.sheetOrder !== b.sheetOrder) return a.sheetOrder - b.sheetOrder;
+    if (a.weekOrder !== b.weekOrder) return a.weekOrder - b.weekOrder;
     if (a.dayOrder !== b.dayOrder) return a.dayOrder - b.dayOrder;
+    if (a.dayNumber !== b.dayNumber) return a.dayNumber - b.dayNumber;
     return a.task.localeCompare(b.task, "fr", { sensitivity: "base" });
+  }
+
+  function countGlobalDaysForPerson(records, personName) {
+    if (!personName) return 0;
+    var unique = {};
+    records.forEach(function (rec) {
+      if (rec.person !== personName) return;
+      var key = rec.fileName + "|" + rec.sheetName + "|" + rec.weekLabel + "|" + rec.dayLabel;
+      unique[key] = true;
+    });
+    return Object.keys(unique).length;
   }
 
   function isTaskEnabled(record) {
