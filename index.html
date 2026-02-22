@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Planning XLSX</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <h1>Planning par personne</h1>
+        <p>Importez un fichier .xlsx et obtenez les jours de travail par personne.</p>
+      </header>
+
+      <section class="panel upload-panel">
+        <label class="file-label" for="fileInput">Fichier Excel (.xlsx)</label>
+        <input id="fileInput" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+        <button id="parseBtn" type="button">Generer le planning</button>
+        <p id="status" class="status">En attente d'un fichier.</p>
+      </section>
+
+      <section id="controls" class="panel controls hidden" aria-live="polite">
+        <label for="personSearch">Rechercher une personne</label>
+        <input id="personSearch" type="search" placeholder="Nom..." autocomplete="off" />
+
+        <label for="personSelect">Ou selectionner</label>
+        <select id="personSelect"></select>
+
+        <label class="inline-check">
+          <input id="showTasks" type="checkbox" />
+          Afficher les taches assignees (si detectees)
+        </label>
+      </section>
+
+      <section id="summary" class="panel summary hidden"></section>
+      <section id="personView" class="person-view"></section>
+    </main>
+  </body>
+</html>
