@@ -102,6 +102,51 @@ button {
   gap: 0.6rem;
 }
 
+.sub-panel {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 0.6rem;
+}
+
+.sub-panel summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.task-panel[open] summary {
+  margin-bottom: 0.35rem;
+}
+
+.hint {
+  margin: 0 0 0.4rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.task-checklist {
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.35rem;
+  background: #fff;
+}
+
+.task-item {
+  display: flex;
+  gap: 0.45rem;
+  align-items: flex-start;
+  font-size: 0.83rem;
+  color: #36342d;
+  padding: 0.2rem;
+}
+
+.task-item input {
+  width: auto;
+  margin-top: 0.15rem;
+}
+
 .inline-check {
   display: flex;
   align-items: center;
@@ -222,6 +267,10 @@ button {
   }
 
   .inline-check {
+    grid-column: 1 / -1;
+  }
+
+  .sub-panel {
     grid-column: 1 / -1;
   }
 }

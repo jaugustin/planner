@@ -16,8 +16,8 @@
       </header>
 
       <section class="panel upload-panel">
-        <label class="file-label" for="fileInput">Fichier Excel (.xlsx)</label>
-        <input id="fileInput" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+        <label class="file-label" for="fileInput">Fichiers Excel (.xlsx)</label>
+        <input id="fileInput" type="file" multiple accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
         <button id="parseBtn" type="button">Generer le planning</button>
         <p id="status" class="status">En attente d'un fichier.</p>
       </section>
@@ -33,6 +33,12 @@
           <input id="showTasks" type="checkbox" />
           Afficher les taches assignees (si detectees)
         </label>
+
+        <details class="sub-panel task-panel">
+          <summary>Taches detectees (filtres)</summary>
+          <p class="hint">Toutes les taches sont pre-cochees.</p>
+          <div id="taskChecklist" class="task-checklist"></div>
+        </details>
       </section>
 
       <section id="summary" class="panel summary hidden"></section>

@@ -1,12 +1,23 @@
 (function () {
-  var state = {
-    records: [],
-    people: [],
-    selectedPerson: "",
-    showTasks: false,
+  var STORAGE_KEYS = {
+    nameMap: "planning_name_map_auto_v2",
+    selectedPerson: "planning_selected_person_v1",
+    showTasks: "planning_show_tasks_v1",
   };
 
   var dayKeys = ["LUNDI", "MARDI", "MERCREDI", "JEUDI", "VENDREDI", "SAMEDI", "DIMANCHE"];
+
+  var state = {
+    baseRecords: [],
+    records: [],
+    people: [],
+    rawPeople: [],
+    taskList: [],
+    selectedTasks: {},
+    selectedPerson: loadString(STORAGE_KEYS.selectedPerson),
+    showTasks: loadBool(STORAGE_KEYS.showTasks),
+    nameMap: loadNameMap(),
+  };
 
   var fileInput = document.getElementById("fileInput");
   var parseBtn = document.getElementById("parseBtn");
@@ -17,14 +28,19 @@
   var personSearchEl = document.getElementById("personSearch");
   var personSelectEl = document.getElementById("personSelect");
   var showTasksEl = document.getElementById("showTasks");
+  var taskChecklistEl = document.getElementById("taskChecklist");
+
+  showTasksEl.checked = state.showTasks;
 
   parseBtn.addEventListener("click", onParseClick);
   personSearchEl.addEventListener("input", onSearchInput);
   personSelectEl.addEventListener("change", onPersonSelect);
   showTasksEl.addEventListener("change", function () {
     state.showTasks = showTasksEl.checked;
+    saveString(STORAGE_KEYS.showTasks, state.showTasks ? "1" : "0");
     renderPerson();
   });
+  taskChecklistEl.addEventListener("change", onTaskChecklistChange);
 
   function onParseClick() {
     if (!window.XLSX) {
@@ -32,51 +48,109 @@
       return;
     }
 
-    var file = fileInput.files && fileInput.files[0];
-    if (!file) {
-      setStatus("Selectionnez un fichier .xlsx.", true);
+    var files = Array.prototype.slice.call(fileInput.files || []);
+    if (!files.length) {
+      setStatus("Selectionnez un ou plusieurs fichiers .xlsx.", true);
       return;
     }
 
-    setStatus("Lecture du fichier...", false);
-    var reader = new FileReader();
-    reader.onload = function (evt) {
-      try {
-        var data = evt.target.result;
-        var workbook = XLSX.read(data, { type: "array", cellDates: false });
-        var parsed = parseWorkbook(workbook);
-        state.records = parsed;
-        state.people = extractPeople(parsed);
-        state.selectedPerson = state.people[0] || "";
-        state.showTasks = showTasksEl.checked;
+    setStatus("Lecture de " + files.length + " fichier(s)...", false);
 
-        if (!state.records.length) {
+    Promise.all(files.map(readWorkbookFromFile))
+      .then(function (workbooks) {
+        var merged = [];
+        workbooks.forEach(function (item) {
+          merged = merged.concat(parseWorkbook(item.workbook, item.fileName));
+        });
+
+        state.baseRecords = merged;
+        if (!state.baseRecords.length) {
+          state.records = [];
+          state.people = [];
           controlsEl.classList.add("hidden");
           summaryEl.classList.add("hidden");
           personViewEl.innerHTML = "";
-          setStatus("Aucune affectation detectee dans ce fichier.", true);
+          setStatus("Aucune affectation detectee dans les fichiers importes.", true);
           return;
         }
 
-        setStatus("Planning genere avec succes.", false);
-        renderControls();
-        renderSummary();
-        renderPerson();
-      } catch (err) {
+        refreshDerivedState();
+        setStatus(
+          "Planning fusionne genere: " +
+            files.length +
+            " fichier(s), " +
+            state.people.length +
+            " personne(s).",
+          false
+        );
+      })
+      .catch(function (err) {
         console.error(err);
         controlsEl.classList.add("hidden");
         summaryEl.classList.add("hidden");
         personViewEl.innerHTML = "";
-        setStatus("Erreur pendant l'analyse du fichier.", true);
-      }
-    };
-    reader.onerror = function () {
-      setStatus("Impossible de lire le fichier.", true);
-    };
-    reader.readAsArrayBuffer(file);
+        setStatus("Erreur pendant l'analyse des fichiers.", true);
+      });
   }
 
-  function parseWorkbook(workbook) {
+  function refreshDerivedState() {
+    updateAutoNameMap(state.baseRecords);
+
+    state.records = state.baseRecords
+      .map(function (rec) {
+        var mapped = applyNameMap(rec.rawPerson);
+        if (!mapped) return null;
+        return {
+          person: mapped,
+          rawPerson: rec.rawPerson,
+          dayLabel: rec.dayLabel,
+          dayName: rec.dayName,
+          dayOrder: rec.dayOrder,
+          dayNumber: rec.dayNumber,
+          weekLabel: rec.weekLabel,
+          weekOrder: rec.weekOrder,
+          sortYear: rec.sortYear,
+          sortMonth: rec.sortMonth,
+          sheetName: rec.sheetName,
+          fileName: rec.fileName,
+          section: rec.section,
+          role: rec.role,
+          task: rec.task,
+        };
+      })
+      .filter(Boolean);
+
+    state.people = extractMappedPeople(state.records);
+    state.rawPeople = extractRawPeople(state.baseRecords);
+    refreshTaskFilter(state.records);
+
+    if (!state.selectedPerson || state.people.indexOf(state.selectedPerson) < 0) {
+      state.selectedPerson = state.people[0] || "";
+      saveString(STORAGE_KEYS.selectedPerson, state.selectedPerson || "");
+    }
+
+    renderControls();
+    renderSummary();
+    renderPerson();
+  }
+
+  function readWorkbookFromFile(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function (evt) {
+        try {
+          var workbook = XLSX.read(evt.target.result, { type: "array", cellDates: false });
+          resolve({ fileName: file.name, workbook: workbook });
+        } catch (err) {
+          reject(err);
+        }
+      };
+      reader.onerror = reject;
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  function parseWorkbook(workbook, fileName) {
     var records = [];
     var weekIndex = 0;
 
@@ -93,8 +167,9 @@
         weekIndex += 1;
         var nextHeaderRow = idx < headers.length - 1 ? headers[idx + 1].row : rows.length;
         var weekLabel = findWeekLabel(rows, header.row, sheetName);
+        var weekMeta = deriveWeekMeta(weekLabel);
         records = records.concat(
-          extractAssignments(rows, header, nextHeaderRow, sheetName, weekLabel, weekIndex)
+          extractAssignments(rows, header, nextHeaderRow, fileName, sheetName, weekLabel, weekIndex, weekMeta)
         );
       });
     });
@@ -152,7 +227,7 @@
     return fallback;
   }
 
-  function extractAssignments(rows, header, nextHeaderRow, sheetName, weekLabel, weekIndex) {
+  function extractAssignments(rows, header, nextHeaderRow, fileName, sheetName, weekLabel, weekIndex, weekMeta) {
     var out = [];
     var currentSection = "";
     var currentRole = "";
@@ -178,14 +253,17 @@
 
         for (var p = 0; p < people.length; p += 1) {
           out.push({
-            person: people[p],
+            rawPerson: people[p],
             dayLabel: dayCol.dayLabel,
             dayName: dayCol.dayName,
             dayOrder: dayCol.dayOrder,
             dayNumber: extractDayNumber(dayCol.dayLabel),
             weekLabel: weekLabel,
             weekOrder: weekIndex,
+            sortYear: weekMeta.year,
+            sortMonth: weekMeta.month,
             sheetName: sheetName,
+            fileName: fileName,
             section: currentSection || "",
             role: currentRole || "",
             task: buildTask(currentSection, currentRole),
@@ -201,72 +279,92 @@
     return out;
   }
 
-  function extractPeople(records) {
+  function extractMappedPeople(records) {
     var unique = {};
     records.forEach(function (rec) {
       unique[rec.person] = true;
     });
-    return Object.keys(unique).sort(function (a, b) {
-      return a.localeCompare(b, "fr", { sensitivity: "base" });
+    return sortStrings(Object.keys(unique));
+  }
+
+  function extractRawPeople(records) {
+    var unique = {};
+    records.forEach(function (rec) {
+      unique[rec.rawPerson] = true;
     });
+    return sortStrings(Object.keys(unique));
+  }
+
+  function refreshTaskFilter(records) {
+    var unique = {};
+    records.forEach(function (rec) {
+      if (rec.task) unique[rec.task] = true;
+    });
+    state.taskList = sortStrings(Object.keys(unique));
+
+    var next = {};
+    state.taskList.forEach(function (task) {
+      if (Object.prototype.hasOwnProperty.call(state.selectedTasks, task)) {
+        next[task] = state.selectedTasks[task];
+      } else {
+        next[task] = true;
+      }
+    });
+    state.selectedTasks = next;
   }
 
   function renderControls() {
     controlsEl.classList.remove("hidden");
-    personSelectEl.innerHTML = "";
 
+    personSelectEl.innerHTML = "";
     state.people.forEach(function (name) {
       var opt = document.createElement("option");
       opt.value = name;
       opt.textContent = name;
       personSelectEl.appendChild(opt);
     });
-
     personSelectEl.value = state.selectedPerson;
     personSearchEl.value = state.selectedPerson;
+    renderTaskChecklist();
+  }
+
+  function renderTaskChecklist() {
+    if (!state.taskList.length) {
+      taskChecklistEl.innerHTML = '<p class="hint">Aucune tache detectee.</p>';
+      return;
+    }
+
+    var html = "";
+    state.taskList.forEach(function (task) {
+      var checked = state.selectedTasks[task] !== false ? " checked" : "";
+      html +=
+        '<label class="task-item"><input type="checkbox" data-task="' +
+        escapeHtml(task) +
+        '"' +
+        checked +
+        " />" +
+        escapeHtml(task) +
+        "</label>";
+    });
+    taskChecklistEl.innerHTML = html;
   }
 
   function renderSummary() {
     summaryEl.classList.remove("hidden");
 
+    var enabled = state.records.filter(isTaskEnabled);
     var daysCountByPerson = {};
-    state.records.forEach(function (rec) {
-      var key = rec.person + "|" + rec.weekOrder + "|" + rec.dayName + "|" + rec.dayLabel;
+    enabled.forEach(function (rec) {
+      var key = rec.person + "|" + rec.weekLabel + "|" + rec.dayName + "|" + rec.dayLabel;
       daysCountByPerson[key] = true;
     });
-
-    var totalAssignments = state.records.length;
-    var totalDistinctDays = Object.keys(daysCountByPerson).length;
 
     summaryEl.innerHTML =
       '<div class="summary-grid">' +
       '<div class="kpi"><strong>' + state.people.length + "</strong><span>personnes</span></div>" +
-      '<div class="kpi"><strong>' + totalDistinctDays + "</strong><span>jours planifies</span></div>" +
-      '<div class="kpi"><strong>' + totalAssignments + "</strong><span>affectations</span></div>" +
+      '<div class="kpi"><strong>' + Object.keys(daysCountByPerson).length + "</strong><span>jours planifies</span></div>" +
+      '<div class="kpi"><strong>' + enabled.length + "</strong><span>affectations</span></div>" +
       "</div>";
-  }
-
-  function onSearchInput() {
-    var q = personSearchEl.value.trim().toLowerCase();
-    if (!q) {
-      return;
-    }
-
-    var found = state.people.find(function (name) {
-      return name.toLowerCase().indexOf(q) >= 0;
-    });
-
-    if (found) {
-      state.selectedPerson = found;
-      personSelectEl.value = found;
-      renderPerson();
-    }
-  }
-
-  function onPersonSelect() {
-    state.selectedPerson = personSelectEl.value;
-    personSearchEl.value = state.selectedPerson;
-    renderPerson();
   }
 
   function renderPerson() {
@@ -278,7 +376,7 @@
 
     var personRecords = state.records
       .filter(function (rec) {
-        return rec.person === name;
+        return rec.person === name && isTaskEnabled(rec);
       })
       .sort(sortRecords);
 
@@ -324,11 +422,14 @@
     var weekMap = {};
 
     records.forEach(function (rec) {
-      var wkKey = rec.weekOrder + "|" + rec.weekLabel;
+      var wkKey = rec.weekLabel;
       if (!weekMap[wkKey]) {
         weekMap[wkKey] = {
           weekOrder: rec.weekOrder,
           weekLabel: rec.weekLabel,
+          sortYear: rec.sortYear,
+          sortMonth: rec.sortMonth,
+          fileName: rec.fileName,
           days: [],
           dayMap: {},
         };
@@ -353,15 +454,18 @@
     });
 
     weeks.sort(function (a, b) {
-      return a.weekOrder - b.weekOrder;
+      if (a.sortYear !== b.sortYear) return a.sortYear - b.sortYear;
+      if (a.sortMonth !== b.sortMonth) return a.sortMonth - b.sortMonth;
+      var aStart = a.days.length ? extractDayNumber(a.days[0].dayLabel) : 0;
+      var bStart = b.days.length ? extractDayNumber(b.days[0].dayLabel) : 0;
+      if (aStart !== bStart) return aStart - bStart;
+      return a.weekLabel.localeCompare(b.weekLabel, "fr", { sensitivity: "base" });
     });
 
     weeks.forEach(function (w) {
       w.days.sort(function (a, b) {
         if (a.dayOrder !== b.dayOrder) return a.dayOrder - b.dayOrder;
-        var an = extractDayNumber(a.dayLabel);
-        var bn = extractDayNumber(b.dayLabel);
-        return an - bn;
+        return extractDayNumber(a.dayLabel) - extractDayNumber(b.dayLabel);
       });
     });
 
@@ -369,10 +473,109 @@
   }
 
   function sortRecords(a, b) {
-    if (a.weekOrder !== b.weekOrder) return a.weekOrder - b.weekOrder;
-    if (a.dayOrder !== b.dayOrder) return a.dayOrder - b.dayOrder;
+    if (a.sortYear !== b.sortYear) return a.sortYear - b.sortYear;
+    if (a.sortMonth !== b.sortMonth) return a.sortMonth - b.sortMonth;
     if (a.dayNumber !== b.dayNumber) return a.dayNumber - b.dayNumber;
+    if (a.dayOrder !== b.dayOrder) return a.dayOrder - b.dayOrder;
     return a.task.localeCompare(b.task, "fr", { sensitivity: "base" });
+  }
+
+  function isTaskEnabled(record) {
+    if (!record.task) return true;
+    return state.selectedTasks[record.task] !== false;
+  }
+
+  function onSearchInput() {
+    var q = personSearchEl.value.trim().toLowerCase();
+    if (!q) return;
+
+    var found = state.people.find(function (name) {
+      return name.toLowerCase().indexOf(q) >= 0;
+    });
+
+    if (found) {
+      state.selectedPerson = found;
+      personSelectEl.value = found;
+      saveString(STORAGE_KEYS.selectedPerson, found);
+      renderPerson();
+    }
+  }
+
+  function onPersonSelect() {
+    state.selectedPerson = personSelectEl.value;
+    personSearchEl.value = state.selectedPerson;
+    saveString(STORAGE_KEYS.selectedPerson, state.selectedPerson);
+    renderPerson();
+  }
+
+  function onTaskChecklistChange(evt) {
+    var input = evt.target;
+    if (!(input instanceof HTMLInputElement) || input.type !== "checkbox") return;
+    var task = input.getAttribute("data-task");
+    if (!task) return;
+
+    state.selectedTasks[task] = input.checked;
+    renderSummary();
+    renderPerson();
+  }
+
+  function applyNameMap(rawName) {
+    var key = nameKey(rawName);
+    if (state.nameMap[key]) {
+      return state.nameMap[key];
+    }
+    return rawName;
+  }
+
+  function updateAutoNameMap(records) {
+    var changed = false;
+    records.forEach(function (rec) {
+      var source = toText(rec.rawPerson).trim();
+      if (!source) return;
+      var key = nameKey(source);
+      if (!state.nameMap[key]) {
+        state.nameMap[key] = source;
+        changed = true;
+      }
+    });
+    if (changed) {
+      persistNameMap();
+    }
+  }
+
+  function nameKey(name) {
+    return normalize(name);
+  }
+
+  function persistNameMap() {
+    try {
+      localStorage.setItem(STORAGE_KEYS.nameMap, JSON.stringify(state.nameMap));
+    } catch (_) {}
+  }
+
+  function loadNameMap() {
+    var raw = loadString(STORAGE_KEYS.nameMap);
+    if (!raw) return {};
+    try {
+      var parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return {};
+
+      var map = {};
+      Object.keys(parsed).forEach(function (key) {
+        var item = parsed[key];
+        var target = "";
+        if (typeof item === "string") {
+          target = toText(item).trim();
+        } else if (item && typeof item === "object") {
+          target = toText(item.target).trim();
+        }
+        if (!target) return;
+        map[key] = target;
+      });
+      return map;
+    } catch (_) {
+      return {};
+    }
   }
 
   function splitPeople(rawCell) {
@@ -440,6 +643,38 @@
     return m ? parseInt(m[1], 10) : 0;
   }
 
+  function deriveWeekMeta(weekLabel) {
+    var text = normalize(weekLabel);
+    var yearMatch = text.match(/(20\d{2})/);
+    var year = yearMatch ? parseInt(yearMatch[1], 10) : 0;
+
+    var months = {
+      JANVIER: 1,
+      FEVRIER: 2,
+      MARS: 3,
+      AVRIL: 4,
+      MAI: 5,
+      JUIN: 6,
+      JUILLET: 7,
+      AOUT: 8,
+      SEPTEMBRE: 9,
+      OCTOBRE: 10,
+      NOVEMBRE: 11,
+      DECEMBRE: 12,
+    };
+
+    var month = 0;
+    Object.keys(months).some(function (name) {
+      if (text.indexOf(name) >= 0) {
+        month = months[name];
+        return true;
+      }
+      return false;
+    });
+
+    return { year: year, month: month };
+  }
+
   function normalize(value) {
     return toText(value)
       .normalize("NFD")
@@ -447,6 +682,12 @@
       .toUpperCase()
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function sortStrings(values) {
+    return values.sort(function (a, b) {
+      return a.localeCompare(b, "fr", { sensitivity: "base" });
+    });
   }
 
   function toText(value) {
@@ -466,5 +707,23 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  function loadString(key) {
+    try {
+      return localStorage.getItem(key) || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function saveString(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (_) {}
+  }
+
+  function loadBool(key) {
+    return loadString(key) === "1";
   }
 })();
