@@ -107,6 +107,7 @@
         return {
           person: mapped,
           rawPerson: rec.rawPerson,
+          observationOnly: !!rec.observationOnly,
           dayLabel: rec.dayLabel,
           dayName: rec.dayName,
           dayOrder: rec.dayOrder,
@@ -122,6 +123,7 @@
           section: rec.section,
           role: rec.role,
           task: rec.task,
+          observation: rec.observation,
         };
       })
       .filter(Boolean);
@@ -200,11 +202,15 @@
     for (var r = 0; r < rows.length; r += 1) {
       var row = rows[r] || [];
       var dayColumns = [];
+      var observationCol = -1;
 
       for (var c = 0; c < row.length; c += 1) {
         var value = toText(row[c]);
         if (!value) continue;
         var n = normalize(value);
+        if (observationCol < 0 && (n === "OBSERVATIONS" || n.indexOf("OBSERVATION") === 0)) {
+          observationCol = c;
+        }
         for (var d = 0; d < dayKeys.length; d += 1) {
           if (n.indexOf(dayKeys[d]) === 0) {
             dayColumns.push({
@@ -222,7 +228,7 @@
         dayColumns.sort(function (a, b) {
           return a.col - b.col;
         });
-        headers.push({ row: r, dayColumns: dayColumns });
+        headers.push({ row: r, dayColumns: dayColumns, observationCol: observationCol });
       }
     }
 
@@ -259,16 +265,50 @@
     var out = [];
     var currentSection = "";
     var currentRole = "";
+    var currentObservation = "";
 
     for (var r = header.row + 1; r < nextHeaderRow; r += 1) {
       var row = rows[r] || [];
       var sectionCell = toText(row[0]).trim();
       var roleCell = toText(row[1]).trim();
+      var observationText = "";
+      if (header.observationCol >= 0) {
+        observationText = toText(row[header.observationCol]).trim();
+        if (observationText) {
+          currentObservation = observationText;
+        }
+      }
 
       if (sectionCell) currentSection = sectionCell;
       if (roleCell) currentRole = roleCell;
 
       var hasAnyAssignment = false;
+
+      if (observationText) {
+        var obsPeople = extractPeopleFromObservation(observationText);
+        for (var op = 0; op < obsPeople.length; op += 1) {
+          out.push({
+            rawPerson: obsPeople[op],
+            observationOnly: true,
+            dayLabel: "",
+            dayName: "",
+            dayOrder: 99,
+            dayNumber: 99,
+            weekLabel: weekLabel,
+            weekOrder: weekIndex,
+            sortYear: weekMeta.year,
+            sortMonth: weekMeta.month,
+            fileOrder: fileOrder,
+            sheetName: sheetName,
+            sheetOrder: sheetOrder,
+            fileName: fileName,
+            section: currentSection || "",
+            role: currentRole || "",
+            task: "",
+            observation: observationText,
+          });
+        }
+      }
 
       for (var i = 0; i < header.dayColumns.length; i += 1) {
         var dayCol = header.dayColumns[i];
@@ -282,6 +322,7 @@
         for (var p = 0; p < people.length; p += 1) {
           out.push({
             rawPerson: people[p],
+            observationOnly: false,
             dayLabel: dayCol.dayLabel,
             dayName: dayCol.dayName,
             dayOrder: dayCol.dayOrder,
@@ -297,6 +338,10 @@
             section: currentSection || "",
             role: currentRole || "",
             task: buildTask(currentSection, currentRole),
+            observation:
+              currentObservation && observationMatchesPerson(currentObservation, people[p])
+                ? currentObservation
+                : "",
           });
         }
       }
@@ -385,6 +430,7 @@
     var enabled = state.records.filter(isTaskEnabled);
     var daysCountByPerson = {};
     enabled.forEach(function (rec) {
+      if (rec.observationOnly) return;
       var key = rec.person + "|" + rec.fileName + "|" + rec.sheetName + "|" + rec.weekLabel + "|" + rec.dayLabel;
       daysCountByPerson[key] = true;
     });
@@ -438,6 +484,15 @@
         sheetGroup.weeks.forEach(function (week) {
           html += '<section class="week-block">';
           html += '<h5 class="week-title">' + escapeHtml(week.weekLabel) + "</h5>";
+
+          if (week.observations.length) {
+            html += '<ul class="obs-list">';
+            week.observations.forEach(function (observation) {
+              html += "<li>Observation: " + escapeHtml(observation) + "</li>";
+            });
+            html += "</ul>";
+          }
+
           html += '<ul class="day-list">';
 
           week.days.forEach(function (day) {
@@ -501,10 +556,24 @@
         fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey] = {
           weekOrder: rec.weekOrder,
           weekLabel: rec.weekLabel,
+          observations: [],
+          observationSet: {},
           days: [],
           dayMap: {},
         };
         fileMap[fileKey].sheetMap[sheetKey].weeks.push(fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey]);
+      }
+
+      if (rec.observation) {
+        var weekObj = fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey];
+        if (!weekObj.observationSet[rec.observation]) {
+          weekObj.observationSet[rec.observation] = true;
+          weekObj.observations.push(rec.observation);
+        }
+      }
+
+      if (rec.observationOnly) {
+        return;
       }
 
       var dayKey = rec.dayOrder + "|" + rec.dayLabel;
@@ -524,6 +593,7 @@
         fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey].dayMap[dayKey].taskSet[rec.task] = true;
         fileMap[fileKey].sheetMap[sheetKey].weekMap[weekKey].dayMap[dayKey].tasks.push(rec.task);
       }
+
     });
 
     files.sort(function (a, b) {
@@ -569,6 +639,7 @@
     var unique = {};
     records.forEach(function (rec) {
       if (rec.person !== personName) return;
+      if (rec.observationOnly) return;
       var key = rec.fileName + "|" + rec.sheetName + "|" + rec.weekLabel + "|" + rec.dayLabel;
       unique[key] = true;
     });
@@ -699,6 +770,52 @@
       }
     });
     return out;
+  }
+
+  function extractPeopleFromObservation(observation) {
+    var text = toText(observation);
+    if (!text) return [];
+
+    var source = text;
+    var colonIndex = source.indexOf(":");
+    if (colonIndex >= 0) {
+      source = source.slice(colonIndex + 1);
+    }
+
+    source = source.replace(/\bet\b/gi, ",");
+    var candidates = source
+      .split(/[;,/]/)
+      .map(function (part) {
+        return sanitizePerson(part);
+      })
+      .filter(Boolean);
+
+    var unique = {};
+    var out = [];
+    candidates.forEach(function (name) {
+      if (!unique[name]) {
+        unique[name] = true;
+        out.push(name);
+      }
+    });
+    return out;
+  }
+
+  function observationMatchesPerson(observation, person) {
+    var obs = normalize(observation);
+    var who = normalize(person);
+    if (!obs || !who) return false;
+    if (obs.indexOf(who) >= 0) return true;
+
+    var tokens = who.split(/[^A-Z0-9]+/).filter(function (t) {
+      return t.length >= 3;
+    });
+
+    for (var i = 0; i < tokens.length; i += 1) {
+      if (obs.indexOf(tokens[i]) >= 0) return true;
+    }
+
+    return false;
   }
 
   function sanitizePerson(text) {

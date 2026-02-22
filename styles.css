@@ -233,7 +233,8 @@ button {
 }
 
 .day-list,
-.task-list {
+.task-list,
+.obs-list {
   margin: 0;
   padding: 0;
   list-style: none;
@@ -266,6 +267,12 @@ button {
   gap: 0.3rem;
 }
 
+.obs-list {
+  margin-top: 0.35rem;
+  display: grid;
+  gap: 0.25rem;
+}
+
 .task-list li {
   font-size: 0.9rem;
   color: #37352f;
@@ -273,6 +280,15 @@ button {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0.35rem 0.46rem;
+}
+
+.obs-list li {
+  font-size: 0.86rem;
+  color: #3f3b32;
+  background: #fbf6ed;
+  border: 1px dashed #d9cfbd;
+  border-radius: 8px;
+  padding: 0.32rem 0.44rem;
 }
 
 .hidden {
