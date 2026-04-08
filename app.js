@@ -24,11 +24,14 @@
   var statusEl = document.getElementById("status");
   var controlsEl = document.getElementById("controls");
   var summaryEl = document.getElementById("summary");
+  var exportPanelEl = document.getElementById("exportPanel");
   var personViewEl = document.getElementById("personView");
   var personSearchEl = document.getElementById("personSearch");
   var personSelectEl = document.getElementById("personSelect");
   var showTasksEl = document.getElementById("showTasks");
   var taskChecklistEl = document.getElementById("taskChecklist");
+  var exportIcsBtnEl = document.getElementById("exportIcsBtn");
+  var shareIcsBtnEl = document.getElementById("shareIcsBtn");
 
   showTasksEl.checked = state.showTasks;
 
@@ -41,6 +44,8 @@
     renderPerson();
   });
   taskChecklistEl.addEventListener("change", onTaskChecklistChange);
+  exportIcsBtnEl.addEventListener("click", onExportIcs);
+  shareIcsBtnEl.addEventListener("click", onShareIcs);
 
   function onParseClick() {
     if (!window.XLSX) {
@@ -73,6 +78,7 @@
           state.people = [];
           controlsEl.classList.add("hidden");
           summaryEl.classList.add("hidden");
+          exportPanelEl.classList.add("hidden");
           personViewEl.innerHTML = "";
           setStatus("Aucune affectation detectee dans les fichiers importes.", true);
           return;
@@ -92,6 +98,7 @@
         console.error(err);
         controlsEl.classList.add("hidden");
         summaryEl.classList.add("hidden");
+        exportPanelEl.classList.add("hidden");
         personViewEl.innerHTML = "";
         setStatus("Erreur pendant l'analyse des fichiers.", true);
       });
@@ -113,6 +120,7 @@
           dayOrder: rec.dayOrder,
           dayNumber: rec.dayNumber,
           weekLabel: rec.weekLabel,
+          dateContextLabel: rec.dateContextLabel,
           weekOrder: rec.weekOrder,
           sortYear: rec.sortYear,
           sortMonth: rec.sortMonth,
@@ -175,6 +183,7 @@
         weekIndex += 1;
         var nextHeaderRow = idx < headers.length - 1 ? headers[idx + 1].row : rows.length;
         var weekLabel = findWeekLabel(rows, header.row, sheetName);
+        var dateContextLabel = findDateContextLabel(rows, header.row, weekLabel);
         var weekMeta = deriveWeekMeta(weekLabel);
         records = records.concat(
           extractAssignments(
@@ -186,6 +195,7 @@
             sheetName,
             sheetOrder,
             weekLabel,
+            dateContextLabel,
             weekIndex,
             weekMeta
           )
@@ -250,6 +260,27 @@
     return fallback;
   }
 
+  function findDateContextLabel(rows, headerRow, fallback) {
+    var best = "";
+
+    for (var i = headerRow; i >= Math.max(0, headerRow - 6); i -= 1) {
+      var row = rows[i] || [];
+      for (var c = 0; c < row.length; c += 1) {
+        var text = toText(row[c]).trim();
+        if (!text) continue;
+        var n = normalize(text);
+        if (containsFrenchWeekday(n) && extractMonthNumber(n)) {
+          return text;
+        }
+        if (!best && (extractMonthNumber(n) || /20\d{2}/.test(n))) {
+          best = text;
+        }
+      }
+    }
+
+    return best || fallback;
+  }
+
   function extractAssignments(
     rows,
     header,
@@ -259,6 +290,7 @@
     sheetName,
     sheetOrder,
     weekLabel,
+    dateContextLabel,
     weekIndex,
     weekMeta
   ) {
@@ -295,6 +327,7 @@
             dayOrder: 99,
             dayNumber: 99,
             weekLabel: weekLabel,
+            dateContextLabel: dateContextLabel,
             weekOrder: weekIndex,
             sortYear: weekMeta.year,
             sortMonth: weekMeta.month,
@@ -328,6 +361,7 @@
             dayOrder: dayCol.dayOrder,
             dayNumber: extractDayNumber(dayCol.dayLabel),
             weekLabel: weekLabel,
+            dateContextLabel: dateContextLabel,
             weekOrder: weekIndex,
             sortYear: weekMeta.year,
             sortMonth: weekMeta.month,
@@ -451,18 +485,39 @@
       "</div>";
   }
 
-  function renderPerson() {
-    var name = state.selectedPerson;
-    if (!name) {
-      personViewEl.innerHTML = "";
-      return;
-    }
-
-    var personRecords = state.records
+  function getVisiblePersonRecords(name) {
+    return state.records
       .filter(function (rec) {
         return rec.person === name && isTaskEnabled(rec);
       })
       .sort(sortRecords);
+  }
+
+  function renderExportPanel(personRecords) {
+    var hasExportableDay = personRecords.some(function (rec) {
+      return !rec.observationOnly;
+    });
+
+    if (!state.selectedPerson || !personRecords.length || !hasExportableDay) {
+      exportPanelEl.classList.add("hidden");
+      shareIcsBtnEl.disabled = true;
+      return;
+    }
+
+    exportPanelEl.classList.remove("hidden");
+    shareIcsBtnEl.disabled = !canShareIcsFile();
+  }
+
+  function renderPerson() {
+    var name = state.selectedPerson;
+    if (!name) {
+      renderExportPanel([]);
+      personViewEl.innerHTML = "";
+      return;
+    }
+
+    var personRecords = getVisiblePersonRecords(name);
+    renderExportPanel(personRecords);
 
     if (!personRecords.length) {
       personViewEl.innerHTML = '<article class="panel"><p>Aucun planning pour cette personne.</p></article>';
@@ -685,6 +740,327 @@
     renderPerson();
   }
 
+  function onExportIcs() {
+    var built = buildIcsForSelectedPerson();
+    if (!built) return;
+
+    downloadBlob(built.blob, built.fileName);
+    setStatus(buildExportStatusMessage(built, "Export ICS pret."), false);
+  }
+
+  function onShareIcs() {
+    var built = buildIcsForSelectedPerson();
+    if (!built) return;
+
+    if (!canShareIcsFile()) {
+      downloadBlob(built.blob, built.fileName);
+      setStatus(buildExportStatusMessage(built, "Partage non disponible, fichier telecharge."), false);
+      return;
+    }
+
+    navigator
+      .share({
+        title: built.fileName,
+        text: "Calendrier pour " + state.selectedPerson,
+        files: [built.file],
+      })
+      .then(function () {
+        setStatus(buildExportStatusMessage(built, "Calendrier partage."), false);
+      })
+      .catch(function (err) {
+        if (err && err.name === "AbortError") return;
+        console.error(err);
+        setStatus("Impossible de partager le calendrier.", true);
+      });
+  }
+
+  function buildIcsForSelectedPerson() {
+    var name = state.selectedPerson;
+    if (!name) {
+      setStatus("Selectionnez une personne avant l'export calendrier.", true);
+      return null;
+    }
+
+    var personRecords = getVisiblePersonRecords(name);
+    if (!personRecords.length) {
+      setStatus("Aucun planning visible a exporter pour cette personne.", true);
+      return null;
+    }
+
+    var groups = buildCalendarDayGroups(personRecords);
+    if (!groups.days.length) {
+      setStatus("Aucune date exploitable pour l'export calendrier.", true);
+      return null;
+    }
+
+    var fileName = slugifyFileName(name) + "-planning.ics";
+    var text = buildIcsText(name, groups.days);
+    var blob = new Blob([text], { type: "text/calendar;charset=utf-8" });
+    var file = typeof File === "function" ? new File([blob], fileName, { type: blob.type }) : null;
+
+    return {
+      fileName: fileName,
+      blob: blob,
+      file: file,
+      eventCount: groups.days.length,
+      skippedCount: groups.skippedCount,
+    };
+  }
+
+  function buildCalendarDayGroups(personRecords) {
+    var weekObservations = {};
+    var dayMap = {};
+    var skipped = {};
+
+    personRecords.forEach(function (rec) {
+      var weekKey = rec.fileName + "|" + rec.sheetName + "|" + rec.weekLabel;
+      if (!weekObservations[weekKey]) {
+        weekObservations[weekKey] = { list: [], set: {} };
+      }
+      if (rec.observation && !weekObservations[weekKey].set[rec.observation]) {
+        weekObservations[weekKey].set[rec.observation] = true;
+        weekObservations[weekKey].list.push(rec.observation);
+      }
+    });
+
+    personRecords.forEach(function (rec) {
+      if (rec.observationOnly) return;
+
+      var dayKey = rec.fileName + "|" + rec.sheetName + "|" + rec.weekLabel + "|" + rec.dayLabel;
+      if (!dayMap[dayKey]) {
+        var date = resolveRecordDate(rec);
+        if (!date) {
+          skipped[dayKey] = true;
+          return;
+        }
+
+        var weekKey = rec.fileName + "|" + rec.sheetName + "|" + rec.weekLabel;
+        dayMap[dayKey] = {
+          date: date,
+          dayLabel: rec.dayLabel,
+          fileName: rec.fileName,
+          sheetName: rec.sheetName,
+          weekLabel: rec.weekLabel,
+          tasks: [],
+          taskSet: {},
+          observations: weekObservations[weekKey] ? weekObservations[weekKey].list.slice() : [],
+        };
+      }
+
+      if (rec.task && !dayMap[dayKey].taskSet[rec.task]) {
+        dayMap[dayKey].taskSet[rec.task] = true;
+        dayMap[dayKey].tasks.push(rec.task);
+      }
+    });
+
+    var days = Object.keys(dayMap)
+      .map(function (key) {
+        return dayMap[key];
+      })
+      .sort(function (a, b) {
+        return a.date.getTime() - b.date.getTime();
+      });
+
+    return { days: days, skippedCount: Object.keys(skipped).length };
+  }
+
+  function buildIcsText(personName, days) {
+    var lines = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//planner//planning export//FR",
+      "CALSCALE:GREGORIAN",
+      "METHOD:PUBLISH",
+    ];
+
+    var stamp = formatUtcTimestamp(new Date());
+
+    days.forEach(function (day) {
+      var description = buildIcsDescription(day);
+      var uid = slugifyFileName(personName) + "-" + formatDateKey(day.date) + "-" + slugifyFileName(day.fileName + "-" + day.sheetName);
+      lines.push("BEGIN:VEVENT");
+      lines.push("UID:" + uid + "@planner");
+      lines.push("DTSTAMP:" + stamp);
+      lines.push("SUMMARY:" + escapeIcsText(buildIcsSummary(personName, day)));
+      lines.push("DESCRIPTION:" + escapeIcsText(description));
+      lines.push("DTSTART;VALUE=DATE:" + formatDateKey(day.date));
+      lines.push("DTEND;VALUE=DATE:" + formatDateKey(addUtcDays(day.date, 1)));
+      lines.push("END:VEVENT");
+    });
+
+    lines.push("END:VCALENDAR");
+    return foldIcsLines(lines).join("\r\n") + "\r\n";
+  }
+
+  function buildIcsDescription(day) {
+    var lines = [];
+    if (day.tasks.length) {
+      lines.push("Taches: " + day.tasks.join(" | "));
+    }
+    if (day.observations.length) {
+      lines.push("Observations: " + day.observations.join(" | "));
+    }
+    lines.push("Jour: " + day.dayLabel);
+    lines.push("Source: " + day.fileName + " / " + day.sheetName);
+    lines.push("Semaine: " + day.weekLabel);
+    return lines.join("\n");
+  }
+
+  function buildIcsSummary(personName, day) {
+    var taskLabel = day.tasks.length ? day.tasks.join(" | ") : "Planning";
+    return personName + " - " + taskLabel;
+  }
+
+  function resolveRecordDate(rec) {
+    var dayNumber = rec.dayNumber || extractDayNumber(rec.dayLabel);
+    if (!dayNumber) return null;
+
+    var context = [rec.dateContextLabel, rec.weekLabel, rec.sheetName, rec.fileName].join(" ");
+    var month = extractMonthNumber(context) || rec.sortMonth;
+    var year = extractYearNumber(context) || rec.sortYear || new Date().getFullYear();
+    if (!month || !year) return null;
+
+    return new Date(Date.UTC(year, month - 1, dayNumber));
+  }
+
+  function extractMonthNumber(text) {
+    var normalized = normalize(text);
+    var months = {
+      JANVIER: 1,
+      FEVRIER: 2,
+      MARS: 3,
+      AVRIL: 4,
+      MAI: 5,
+      JUIN: 6,
+      JUILLET: 7,
+      AOUT: 8,
+      SEPTEMBRE: 9,
+      OCTOBRE: 10,
+      NOVEMBRE: 11,
+      DECEMBRE: 12,
+    };
+
+    var names = Object.keys(months);
+    for (var i = 0; i < names.length; i += 1) {
+      if (normalized.indexOf(names[i]) >= 0) {
+        return months[names[i]];
+      }
+    }
+
+    return 0;
+  }
+
+  function extractYearNumber(text) {
+    var match = toText(text).match(/(20\d{2})/);
+    return match ? parseInt(match[1], 10) : 0;
+  }
+
+  function canShareIcsFile() {
+    if (typeof navigator === "undefined" || typeof navigator.share !== "function" || typeof File !== "function") {
+      return false;
+    }
+
+    if (typeof navigator.canShare !== "function") {
+      return false;
+    }
+
+    try {
+      return navigator.canShare({
+        files: [new File(["BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"], "test.ics", { type: "text/calendar" })],
+      });
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function buildExportStatusMessage(built, prefix) {
+    var msg = prefix + " " + built.eventCount + " evenement(s).";
+    if (built.skippedCount) {
+      msg += " " + built.skippedCount + " jour(s) ignores faute de date exploitable.";
+    }
+    return msg;
+  }
+
+  function downloadBlob(blob, fileName) {
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () {
+      URL.revokeObjectURL(url);
+    }, 0);
+  }
+
+  function foldIcsLines(lines) {
+    var folded = [];
+    lines.forEach(function (line) {
+      var text = toText(line);
+      while (text.length > 75) {
+        folded.push(text.slice(0, 75));
+        text = " " + text.slice(75);
+      }
+      folded.push(text);
+    });
+    return folded;
+  }
+
+  function formatDateKey(date) {
+    return (
+      date.getUTCFullYear().toString() +
+      pad2(date.getUTCMonth() + 1) +
+      pad2(date.getUTCDate())
+    );
+  }
+
+  function formatUtcTimestamp(date) {
+    return (
+      date.getUTCFullYear().toString() +
+      pad2(date.getUTCMonth() + 1) +
+      pad2(date.getUTCDate()) +
+      "T" +
+      pad2(date.getUTCHours()) +
+      pad2(date.getUTCMinutes()) +
+      pad2(date.getUTCSeconds()) +
+      "Z"
+    );
+  }
+
+  function addUtcDays(date, days) {
+    return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days));
+  }
+
+  function pad2(value) {
+    return value < 10 ? "0" + value : String(value);
+  }
+
+  function slugifyFileName(text) {
+    return normalize(text)
+      .replace(/[^A-Z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .toLowerCase();
+  }
+
+  function escapeIcsText(text) {
+    return toText(text)
+      .replace(/\\/g, "\\\\")
+      .replace(/;/g, "\\;")
+      .replace(/,/g, "\\,")
+      .replace(/\r?\n/g, "\\n");
+  }
+
+  function containsFrenchWeekday(text) {
+    var normalized = normalize(text);
+    for (var i = 0; i < dayKeys.length; i += 1) {
+      if (normalized.indexOf(dayKeys[i]) >= 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   function applyNameMap(rawName) {
     var key = nameKey(rawName);
     if (state.nameMap[key]) {
@@ -856,35 +1232,10 @@
   }
 
   function deriveWeekMeta(weekLabel) {
-    var text = normalize(weekLabel);
-    var yearMatch = text.match(/(20\d{2})/);
-    var year = yearMatch ? parseInt(yearMatch[1], 10) : 0;
-
-    var months = {
-      JANVIER: 1,
-      FEVRIER: 2,
-      MARS: 3,
-      AVRIL: 4,
-      MAI: 5,
-      JUIN: 6,
-      JUILLET: 7,
-      AOUT: 8,
-      SEPTEMBRE: 9,
-      OCTOBRE: 10,
-      NOVEMBRE: 11,
-      DECEMBRE: 12,
+    return {
+      year: extractYearNumber(weekLabel),
+      month: extractMonthNumber(weekLabel),
     };
-
-    var month = 0;
-    Object.keys(months).some(function (name) {
-      if (text.indexOf(name) >= 0) {
-        month = months[name];
-        return true;
-      }
-      return false;
-    });
-
-    return { year: year, month: month };
   }
 
   function normalize(value) {
